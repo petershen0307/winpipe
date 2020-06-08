@@ -5,6 +5,10 @@ import (
 	"flag"
 	"fmt"
 	"log"
+	"net"
+	"os"
+	"os/signal"
+	"syscall"
 
 	winio "github.com/Microsoft/go-winio"
 )
@@ -20,20 +24,39 @@ func pipeServer(pipeName string) {
 	log.Println(fullPipeName)
 	listener, err := winio.ListenPipe(fullPipeName, nil)
 	if err != nil {
-		fmt.Println(err)
+		log.Println(err)
 		return
 	}
-	defer listener.Close()
+	closeFlag := false
+	go func() {
+		c := make(chan os.Signal)
+		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+		defer signal.Stop(c)
+		defer listener.Close()
+		<-c
+		log.Println("shutdown")
+		closeFlag = true
+	}()
+
 	for {
 		conn, err := listener.Accept()
 		if err != nil {
-			fmt.Println("exit with error:", err)
-			return
+			if closeFlag {
+				break
+			} else {
+				log.Println("listen with error:", err)
+				continue
+			}
 		}
-
-		for scanner := bufio.NewScanner(conn); scanner.Scan(); {
-			fmt.Println(scanner.Text())
-		}
-		conn.Close()
+		go func(cn *net.Conn) {
+			log.Println("got connection")
+			for scanner := bufio.NewScanner(*cn); scanner.Scan(); {
+				fmt.Println(scanner.Text())
+			}
+			defer func() {
+				log.Println("close connection")
+				(*cn).Close()
+			}()
+		}(&conn)
 	}
 }
