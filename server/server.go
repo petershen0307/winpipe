@@ -11,6 +11,7 @@ import (
 	"os/signal"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	winio "github.com/Microsoft/go-winio"
 )
@@ -31,7 +32,9 @@ func main() {
 	time.Sleep(2 * time.Second)
 }
 
-func pipeServer(cxt context.Context, pipeName string) {
+var isListenerClose bool
+
+func pipeServer(ctx context.Context, pipeName string) {
 	fullPipeName := fmt.Sprintf(`\\.\pipe\%s`, pipeName)
 	log.Println(fullPipeName)
 	listener, err := winio.ListenPipe(fullPipeName, nil)
@@ -39,54 +42,52 @@ func pipeServer(cxt context.Context, pipeName string) {
 		log.Println(err)
 		return
 	}
-	isListenerClose := false
+	isListenerClose = false
 	defer func() {
 		log.Println("close listener")
 		isListenerClose = true
 		listener.Close()
 	}()
 
-	go func() {
-		for {
-			// don't block waiting stop event
-			conn, err := listener.Accept()
-			if err != nil {
-				if isListenerClose {
-					break
-				} else {
-					log.Println("listen with error:", err)
-					continue
-				}
-			}
-			go func(cn net.Conn) {
-				log.Println("got connection")
-				defer func() {
-					log.Println("close connection")
-					(cn).Close()
-				}()
-				for scanner := bufio.NewScanner(cn); scanner.Scan(); {
-					fmt.Println(scanner.Text())
-				}
-
-				// wait stop event
-				for {
-					select {
-					case <-cxt.Done():
-						log.Println("connection receive stop event")
-						return
-					default:
-					}
-				}
-			}(conn)
-		}
-	}()
+	go pipeServerHandleListener(ctx, listener)
 	for {
 		// wait stop event
 		select {
-		case <-cxt.Done():
+		case <-ctx.Done():
 			log.Println("listener receive stop event")
 			return
 		default:
 		}
+	}
+}
+
+func pipeServerHandleListener(ctx context.Context, listener net.Listener) {
+	for {
+		// don't block waiting stop event
+		conn, err := listener.Accept()
+		if err != nil {
+			if isListenerClose {
+				break
+			} else {
+				log.Println("listen with error:", err)
+				continue
+			}
+		}
+		go pipeServerHandleConnection(conn)
+	}
+}
+
+func pipeServerHandleConnection(cn net.Conn) {
+	eof, _ := utf8.DecodeRune([]byte{26})
+	log.Println("got connection")
+	defer func() {
+		log.Println("close connection")
+		cn.Close()
+	}()
+	for scanner := bufio.NewScanner(cn); scanner.Scan(); {
+		if scanner.Text() == string(eof) {
+			return
+		}
+		fmt.Printf("%d, %s\n", []byte(scanner.Text()), scanner.Text())
 	}
 }
