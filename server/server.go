@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"context"
 	"flag"
 	"fmt"
 	"log"
@@ -9,6 +10,7 @@ import (
 	"os"
 	"os/signal"
 	"syscall"
+	"time"
 
 	winio "github.com/Microsoft/go-winio"
 )
@@ -16,10 +18,20 @@ import (
 func main() {
 	pipeName := flag.String("p", "", "pipe name")
 	flag.Parse()
-	pipeServer(*pipeName)
+	ctx, cancel := context.WithCancel(context.Background())
+	go pipeServer(ctx, *pipeName)
+
+	// blocking main
+	c := make(chan os.Signal)
+	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
+	defer signal.Stop(c)
+	<-c
+	log.Println("shutdown")
+	cancel()
+	time.Sleep(2 * time.Second)
 }
 
-func pipeServer(pipeName string) {
+func pipeServer(cxt context.Context, pipeName string) {
 	fullPipeName := fmt.Sprintf(`\\.\pipe\%s`, pipeName)
 	log.Println(fullPipeName)
 	listener, err := winio.ListenPipe(fullPipeName, nil)
@@ -27,36 +39,54 @@ func pipeServer(pipeName string) {
 		log.Println(err)
 		return
 	}
-	closeFlag := false
-	go func() {
-		c := make(chan os.Signal)
-		signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
-		defer signal.Stop(c)
-		defer listener.Close()
-		<-c
-		log.Println("shutdown")
-		closeFlag = true
+	isListenerClose := false
+	defer func() {
+		log.Println("close listener")
+		isListenerClose = true
+		listener.Close()
 	}()
 
-	for {
-		conn, err := listener.Accept()
-		if err != nil {
-			if closeFlag {
-				break
-			} else {
-				log.Println("listen with error:", err)
-				continue
+	go func() {
+		for {
+			// don't block waiting stop event
+			conn, err := listener.Accept()
+			if err != nil {
+				if isListenerClose {
+					break
+				} else {
+					log.Println("listen with error:", err)
+					continue
+				}
 			}
+			go func(cn net.Conn) {
+				log.Println("got connection")
+				defer func() {
+					log.Println("close connection")
+					(cn).Close()
+				}()
+				for scanner := bufio.NewScanner(cn); scanner.Scan(); {
+					fmt.Println(scanner.Text())
+				}
+
+				// wait stop event
+				for {
+					select {
+					case <-cxt.Done():
+						log.Println("connection receive stop event")
+						return
+					default:
+					}
+				}
+			}(conn)
 		}
-		go func(cn *net.Conn) {
-			log.Println("got connection")
-			for scanner := bufio.NewScanner(*cn); scanner.Scan(); {
-				fmt.Println(scanner.Text())
-			}
-			defer func() {
-				log.Println("close connection")
-				(*cn).Close()
-			}()
-		}(&conn)
+	}()
+	for {
+		// wait stop event
+		select {
+		case <-cxt.Done():
+			log.Println("listener receive stop event")
+			return
+		default:
+		}
 	}
 }
