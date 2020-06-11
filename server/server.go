@@ -32,8 +32,6 @@ func main() {
 	time.Sleep(2 * time.Second)
 }
 
-var isListenerClose bool
-
 func pipeServer(ctx context.Context, pipeName string) {
 	fullPipeName := fmt.Sprintf(`\\.\pipe\%s`, pipeName)
 	log.Println(fullPipeName)
@@ -42,10 +40,8 @@ func pipeServer(ctx context.Context, pipeName string) {
 		log.Println(err)
 		return
 	}
-	isListenerClose = false
 	defer func() {
 		log.Println("close listener")
-		isListenerClose = true
 		listener.Close()
 	}()
 
@@ -66,7 +62,7 @@ func pipeServerHandleListener(ctx context.Context, listener net.Listener) {
 		// don't block waiting stop event
 		conn, err := listener.Accept()
 		if err != nil {
-			if isListenerClose {
+			if err == winio.ErrPipeListenerClosed {
 				break
 			} else {
 				log.Println("listen with error:", err)
@@ -88,6 +84,6 @@ func pipeServerHandleConnection(cn net.Conn) {
 		if scanner.Text() == string(eof) {
 			return
 		}
-		fmt.Printf("%d, %s\n", []byte(scanner.Text()), scanner.Text())
+		fmt.Printf("%s\n", scanner.Text())
 	}
 }
