@@ -8,6 +8,7 @@ import (
 	"net"
 	"os"
 	"time"
+	"unicode/utf8"
 
 	"github.com/Microsoft/go-winio"
 )
@@ -38,5 +39,9 @@ func pipeClient(pipeName string) {
 	for scanner := bufio.NewScanner(os.Stdin); scanner.Scan(); {
 		fmt.Fprintln(conn, scanner.Text())
 	}
-	defer conn.Close()
+	defer func() {
+		eof, _ := utf8.DecodeRune([]byte{26})
+		fmt.Fprintf(conn, "%c", eof)
+		conn.Close()
+	}()
 }
